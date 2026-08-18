@@ -1,0 +1,167 @@
+{
+  "topics": {
+    "Biology": {
+      "Cell biology": [
+        "Cell structure",
+        "Cell division",
+        "Transport in cells"
+      ],
+      "Organisation": [
+        "Principles of organisation",
+        "Animal tissues, organs and organ systems",
+        "Plant tissues, organs and systems"
+      ],
+      "Infection and response": [
+        "Communicable diseases",
+        "Monoclonal antibodies",
+        "Plant disease"
+      ],
+      "Bioenergetics": [
+        "Photosynthesis",
+        "Respiration"
+      ],
+      "Homeostasis and response": [
+        "Homeostasis",
+        "The human nervous system",
+        "Hormonal coordination in humans",
+        "Plant hormones"
+      ],
+      "Inheritance, variation and evolution": [
+        "Reproduction",
+        "Variation and evolution",
+        "The development of understanding of genetics and evolution",
+        "Classification of living organisms"
+      ],
+      "Ecology": [
+        "Adaptations, interdependence and competition",
+        "Organisation of an ecosystem",
+        "Biodiversity and the effect of human interaction on ecosystems",
+        "Trophic levels in an ecosystem",
+        "Food production"
+      ]
+    },
+    "Chemistry": {
+      "Atomic structure and the periodic table": [
+        "Mixtures",
+        "Development of the model of the atom",
+        "Size and mass of atoms",
+        "Relative atomic mass",
+        "Development of the periodic table",
+        "Metals and non-metals",
+        "Group 7",
+        "Properties of transition metals"
+      ],
+      "Bonding, structure, and the properties of matter": [
+        "Ionic bonding and ionic compounds",
+        "Covalent bonding",
+        "The three states of matter",
+        "Polymers",
+        "Giant covalent structures",
+        "Properties of metals and alloys",
+        "Metals as conductors",
+        "Graphene and fullerenes",
+        "Bulk and surface properties of matter including nanoparticles"
+      ],
+      "Quantitative chemistry": [
+        "Conservation of mass and relative formula mass",
+        "Amounts of substances in equations",
+        "Yield and atom economy of chemical reactions",
+        "Use of amount of substance in relation to volumes of gases"
+      ],
+      "Chemical changes": [
+        "Reactivity of metals and extraction",
+        "Reactions of acids and neutralisation",
+        "Electrolysis and electrode reactions"
+      ],
+      "Energy changes": [
+        "Exothermic and endothermic reactions",
+        "Reaction profiles",
+        "The energy change of reactions"
+      ],
+      "The rate and extent of chemical change": [
+        "Factors which affect the rates of chemical reactions",
+        "Collision theory and activation energy",
+        "Reversible reactions and dynamic equilibrium"
+      ],
+      "Organic chemistry": [
+        "Fractional distillation and petrochemicals",
+        "Properties of hydrocarbons",
+        "Reactions of alkenes and alcohols",
+        "Carboxylic acids",
+        "Condensation polymerisation"
+      ],
+      "Chemical analysis": [
+        "Purity, formulations and chromatography",
+        "Identification of common gases",
+        "Identification of ions by chemical and spectroscopic means"
+      ],
+      "Chemistry of the atmosphere": [
+        "The composition and evolution of the Earth's atmosphere",
+        "Greenhouse gases and climate change",
+        "Common atmospheric pollutants and their sources"
+      ],
+      "Using resources": [
+        "Using the Earth's resources and obtaining potable water",
+        "Ways of reducing the use of resources",
+        "Corrosion and using materials",
+        "Production and uses of NPK fertilisers"
+      ],
+      "Key ideas": [
+        "Key ideas in chemistry"
+      ]
+    },
+    "Physics": {
+      "Energy": [
+        "Energy changes in a system, and the ways energy is stored before and after such changes",
+        "Conservation and dissipation of energy",
+        "National and global energy resources"
+      ],
+      "Electricity": [
+        "Current, potential difference and resistance",
+        "Series and parallel circuits",
+        "Domestic uses and safety",
+        "Energy transfers",
+        "Static electricity (physics only)"
+      ],
+      "Particle model of matter": [
+        "Changes of state and the particle model",
+        "Internal energy and energy transfers",
+        "Particle model and pressure"
+      ],
+      "Atomic structure": [
+        "Atoms and isotopes",
+        "Atoms and nuclear radiation",
+        "Hazards and uses of radioactive emissions and of background radiation (physics only)",
+        "Nuclear fission and fusion"
+      ],
+      "Forces": [
+        "Forces and their interactions",
+        "Work done and energy transfer",
+        "Forces and elasticity",
+        "Moments, levers and gears",
+        "Pressure and pressure differences in fluids",
+        "Forces and motion",
+        "Momentum"
+      ],
+      "Waves": [
+        "Waves in air, fluids and solids",
+        "Electromagnetic waves",
+        "Lenses (physics only)",
+        "Black body radiation"
+      ],
+      "Magnetism and electromagnetism": [
+        "Permanent and induced magnetism, magnetic forces and fields",
+        "The motor effect",
+        "Induced potential, transformers and the generator effect"
+      ],
+      "Space physics (physics only)": [
+        "Solar system; stability of orbital motions; satellites",
+        "Red-shift"
+      ]
+    }
+  },
+  "course_id": "aqa_gcse_separate_sciences",
+  "course_title": "AQA GCSE Separate Sciences",
+  "level": "GCSE",
+  "target_turns": 5
+}
