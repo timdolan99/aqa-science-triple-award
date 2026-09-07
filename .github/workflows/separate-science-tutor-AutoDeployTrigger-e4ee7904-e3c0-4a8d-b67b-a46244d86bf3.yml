@@ -29,5 +29,6 @@ jobs:
         with:
           appSourcePath: ${{ github.workspace }}
           dockerfilePath: Dockerfile
+          acrName: ca3171a2918aacr
           containerAppName: separate-science-tutor
           resourceGroup: socratic-tutor-rg
