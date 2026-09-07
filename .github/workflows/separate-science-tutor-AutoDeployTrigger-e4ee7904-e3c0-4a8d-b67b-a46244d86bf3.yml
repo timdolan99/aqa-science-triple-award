@@ -30,5 +30,7 @@ jobs:
           appSourcePath: ${{ github.workspace }}
           dockerfilePath: Dockerfile
           acrName: ca3171a2918aacr
+          acrUsername: ${{ secrets.SEPARATESCIENCETUTOR_REGISTRY_USERNAME }}
+          acrPassword: ${{ secrets.SEPARATESCIENCETUTOR_REGISTRY_PASSWORD }}
           containerAppName: separate-science-tutor
           resourceGroup: socratic-tutor-rg
