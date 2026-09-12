@@ -1,6 +1,6 @@
 # 🎓 MSc Socratic CS Chatbot
 
-An adaptive Socratic tutoring system built for AQA GCSE Geography using LangGraph, LangChain, and Streamlit. This application dynamically ingests specification documents and guides students through computer science concepts using pedagogical scaffolding and safety-critical guardrails.
+An adaptive Socratic tutoring system built for AQA GCSE Separate Science using LangGraph, LangChain, and Streamlit. This application dynamically ingests specification documents and guides students through computer science concepts using pedagogical scaffolding and safety-critical guardrails.
 
 ## 📂 Directory Structure
 
@@ -15,6 +15,7 @@ msc-socratic-chatbot/
 ├── ingest_corpus.py
 |-- course_spec.json
 ├── requirements.txt
+|-- Dockerfile
 └── socratic_fsm.py
 
 ```
