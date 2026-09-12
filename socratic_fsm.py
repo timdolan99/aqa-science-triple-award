@@ -255,3 +255,65 @@ Student Submission:
   raw_text = extract_clean_text(response)
   clean_text = re.sub(r"```json|```", "", raw_text).strip()
   return json.loads(clean_text)
+
+
+# --- Disciplinary Language / Productive Struggle Helpers ---
+def generate_extended_question(
+    sub_topic: str, course_title: str, level: str
+) -> str:
+  """Generates a high-order, multi-mark extended answer question requiring disciplinary language."""
+  context = get_context(sub_topic, sub_topic)
+  prompt = f"""You are an expert {course_title} ({level}) Senior Examiner designing an extended-response exam question.
+Topic Focus: {sub_topic}
+Syllabus Context:
+{context}
+
+Generate ONE high-tier 6-mark extended explanation question (e.g., "Describe and explain...", "Evaluate the impact of...") that forces students to apply precise disciplinary terminology, cause-and-effect reasoning, and domain vocabulary.
+Return ONLY the question text as a plain string."""
+
+  llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0.4)
+  response = llm.invoke([HumanMessage(content=prompt)])
+  return extract_clean_text(response).strip()
+
+
+def grade_extended_response(
+    sub_topic: str,
+    question: str,
+    student_answer: str,
+    course_title: str,
+    level: str,
+) -> dict:
+  """Grades an extended response focusing on disciplinary language, keyword usage, and conceptual accuracy."""
+  context = get_context(sub_topic, sub_topic)
+  prompt = f"""You are a strict {course_title} ({level}) Senior Examiner marking a 6-mark extended-response question.
+Topic Focus: {sub_topic}
+Syllabus Context:
+{context}
+
+Question: {question}
+Student Submission: {student_answer}
+
+STRICT DISCIPLINARY LANGUAGE RUBRIC:
+- Grade out of 6 marks based on scientific accuracy and use of domain-specific vocabulary.
+- Award 0 marks for vague layperson explanations.
+- Identify exact specification keywords successfully used and critical missing terms.
+- Provide actionable advice on improving scientific phrasing and productive struggle strategies.
+
+Return your evaluation strictly as a single JSON object:
+{{
+  "score": 5,
+  "max_score": 6,
+  "disciplinary_level": "Developing / Proficient / Master",
+  "keywords_used": ["Term 1", "Term 2"],
+  "keywords_missed": ["Term 3", "Term 4"],
+  "model_answer": "Comprehensive 6-mark model answer...",
+  "strengths": "Feedback on terminology used well...",
+  "struggle_advice": "Actionable guidance on refining disciplinary language and cause-and-effect structure..."
+}}"""
+
+  llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0)
+  response = llm.invoke([HumanMessage(content=prompt)])
+
+  raw_text = extract_clean_text(response)
+  clean_text = re.sub(r"```json|```", "", raw_text).strip()
+  return json.loads(clean_text)

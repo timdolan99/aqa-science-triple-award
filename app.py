@@ -6,8 +6,17 @@ from langchain_core.messages import AIMessage, HumanMessage
 import socratic_fsm
 import streamlit as st
 
+if "GOOGLE_API_KEY" in st.secrets:
+  os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+
 importlib.reload(socratic_fsm)
-from socratic_fsm import generate_quiz_questions, grade_quiz_responses, workflow
+from socratic_fsm import (
+    generate_extended_question,
+    generate_quiz_questions,
+    grade_extended_response,
+    grade_quiz_responses,
+    workflow,
+)
 
 # --- Load Dynamic Course Spec ---
 SPEC_PATH = "course_spec.json"
@@ -147,17 +156,25 @@ if "graph_state" not in st.session_state:
   }
 
 if "app_mode" not in st.session_state:
-  st.session_state.app_mode = None  # "socratic" or "quiz"
+  st.session_state.app_mode = None  # "socratic", "quiz", or "extended"
 if "quiz_questions" not in st.session_state:
   st.session_state.quiz_questions = []
 if "quiz_results" not in st.session_state:
   st.session_state.quiz_results = None
+
+# Extended Question State
+if "extended_question" not in st.session_state:
+  st.session_state.extended_question = None
+if "extended_results" not in st.session_state:
+  st.session_state.extended_results = None
 
 
 def reset_session():
   st.session_state.app_mode = None
   st.session_state.quiz_questions = []
   st.session_state.quiz_results = None
+  st.session_state.extended_question = None
+  st.session_state.extended_results = None
   st.session_state.active_subject = None
   st.session_state.active_topic = None
   st.session_state.active_subtopic = None
@@ -221,7 +238,7 @@ if st.session_state.active_subtopic is None:
 
   st.write("")
 
-  # Red Primary Button
+  # Button 1: Red Primary Button
   if st.button(
       "🚀 Start Socratic Session",
       type="primary",
@@ -237,9 +254,9 @@ if st.session_state.active_subtopic is None:
     )
     st.rerun()
 
-  st.write("")  # Vertical spacing
+  st.write("")
 
-  # White Secondary Button
+  # Button 2: White Secondary Button
   if st.button(
       "📝 Take Retrieval Quiz",
       use_container_width=True,
@@ -254,6 +271,27 @@ if st.session_state.active_subtopic is None:
     )
     with st.spinner("Generating 10 specification retrieval questions..."):
       st.session_state.quiz_questions = generate_quiz_questions(
+          full_topic_name, COURSE_TITLE, LEVEL
+      )
+    st.rerun()
+
+  st.write("")
+
+  # Button 3: Productive Struggle & Disciplinary Language Button
+  if st.button(
+      "🧠 Extended Disciplinary Question",
+      use_container_width=True,
+      disabled=not selected_subtopic,
+  ):
+    st.session_state.app_mode = "extended"
+    st.session_state.active_subject = selected_subject
+    st.session_state.active_topic = selected_topic
+    st.session_state.active_subtopic = selected_subtopic
+    full_topic_name = (
+        f"{selected_subject} - {selected_topic}: {selected_subtopic}"
+    )
+    with st.spinner("Generating high-tier extended response scenario..."):
+      st.session_state.extended_question = generate_extended_question(
           full_topic_name, COURSE_TITLE, LEVEL
       )
     st.rerun()
@@ -343,7 +381,102 @@ elif st.session_state.app_mode == "quiz":
     if st.button("Try Another Topic", type="primary"):
       reset_session()
 
-# 3. Socratic Dialogue View
+# 3. Productive Struggle & Disciplinary Language View
+elif st.session_state.app_mode == "extended":
+  st.markdown(
+      f'<div class="chat-header">🧠 {COURSE_TITLE} Disciplinary Language'
+      " Challenge</div>",
+      unsafe_allow_html=True,
+  )
+
+  with st.sidebar:
+    st.subheader("📌 Active Target")
+    st.info(
+        f"**Subject:** {st.session_state.active_subject}\n\n**Topic:**"
+        f" {st.session_state.active_topic}\n\n**Subtopic:**"
+        f" {st.session_state.active_subtopic}"
+    )
+    st.write("---")
+    if st.button("🔄 New Session / Change Topic", use_container_width=True):
+      reset_session()
+
+  if not st.session_state.extended_results:
+    with st.form("extended_question_form"):
+      st.subheader("Extended Answer Challenge (6 Marks)")
+      st.markdown(
+          f"### 📋 Question:\n**{st.session_state.extended_question}**"
+      )
+      st.info(
+          "💡 **Productive Struggle Focus:** Write a detailed explanation."
+          " Focus on cause-and-effect reasoning and credit-bearing"
+          " specification terminology."
+      )
+
+      student_entry = st.text_area(
+          "Your Response:",
+          height=220,
+          placeholder=(
+              "Construct your explanation using precise domain terms..."
+          ),
+      )
+
+      submitted = st.form_submit_button(
+          "Submit Response for Evaluation",
+          type="primary",
+          use_container_width=True,
+      )
+
+      if submitted:
+        full_topic_name = (
+            f"{st.session_state.active_subject} -"
+            f" {st.session_state.active_topic}:"
+            f" {st.session_state.active_subtopic}"
+        )
+        with st.spinner("Evaluating disciplinary terminology and reasoning..."):
+          res = grade_extended_response(
+              full_topic_name,
+              st.session_state.extended_question,
+              student_entry,
+              COURSE_TITLE,
+              LEVEL,
+          )
+          st.session_state.extended_results = res
+        st.rerun()
+
+  else:
+    res = st.session_state.extended_results
+    st.success(
+        f"### 📊 Assessment Complete! Score: {res.get('score', 0)} /"
+        f" {res.get('max_score', 6)}"
+    )
+
+    st.markdown(
+        "**Disciplinary Mastery Level:**"
+        f" `{res.get('disciplinary_level', 'N/A')}`"
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+      st.markdown("#### ✅ Specification Terms Used")
+      st.write(", ".join(res.get("keywords_used", [])) or "None detected")
+    with col2:
+      st.markdown("#### ⚠️ Key Terms Missed")
+      st.write(", ".join(res.get("keywords_missed", [])) or "None")
+
+    st.write("---")
+    st.markdown("### 🔍 Detailed Feedback & Guidance")
+    st.write(f"**Strengths:** {res.get('strengths')}")
+    st.info(
+        f"**Productive Struggle Advice:** {res.get('struggle_advice')}"
+    )
+
+    with st.expander("📖 Exemplar Specification Model Answer"):
+      st.write(res.get("model_answer"))
+
+    if st.button("Try Another Topic", type="primary"):
+      reset_session()
+
+# 4. Socratic Dialogue View
 else:
   st.markdown(
       f'<div class="chat-header">🎓 {COURSE_TITLE} Coach</div>',
