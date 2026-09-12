@@ -10,7 +10,9 @@ msc-socratic-chatbot/
 │   └── secrets.toml
 ├── chroma_db/
 ├── syllabus/
-│   └── aqa-gcse-geography.pdf
+│   └── aqa-gcse-biology.pdf
+    └── aqa-gcse-chemistry.pdf
+    └── aqa-gcse-physics.pdf
 ├── app.py
 ├── ingest_corpus.py
 |-- course_spec.json
