@@ -1,0 +1,11 @@
+streamlit
+langchain
+langchain-core
+langchain-community
+langchain-google-genai
+langchain-chroma
+langchain-huggingface
+sentence-transformers
+langgraph
+chromadb
+pydantic
