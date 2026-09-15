@@ -203,13 +203,22 @@ def reset_session():
 
 
 # --- Screen Router ---
+
 # 1. Selection Screen with 4 Target Buttons
 if st.session_state.active_subtopic is None:
   st.markdown(
       f'<div class="chat-header">🎓 {COURSE_TITLE} Socratic Coach</div>',
       unsafe_allow_html=True,
   )
-  st.markdown('<div class="selection-card">', unsafe_allow_html=True)
+
+  # App Purpose banner
+  st.info(
+      "💡 **App Purpose:** The aim of this app is to help you develop your use"
+      " of disciplinary literacy. To gain a top grade, you need to talk and"
+      " write like a Scientist!"
+  )
+
+  # Native subheader and target selections (no unclosed div wrapper)
   st.subheader("🎯 Select Revision Target")
   st.write(
       "Choose a subject, topic, and subtopic to begin your practice session:"
@@ -250,11 +259,9 @@ if st.session_state.active_subtopic is None:
       "🔍 Step 3: Choose Specific Subtopic:", options=subtopics
   )
 
-  st.write("")
-
-  # Button 1: Primary Red
+  # Button Group
   if st.button(
-      "🚀 Start Socratic Session",
+      "🚀 Start a Socratic Session",
       type="primary",
       use_container_width=True,
       disabled=not selected_subtopic,
@@ -268,11 +275,8 @@ if st.session_state.active_subtopic is None:
     )
     st.rerun()
 
-  st.write("")
-
-  # Button 2: Secondary White
   if st.button(
-      "📝 Take Retrieval Quiz",
+      "📝 Take a Retrieval Quiz",
       use_container_width=True,
       disabled=not selected_subtopic,
   ):
@@ -289,11 +293,8 @@ if st.session_state.active_subtopic is None:
       )
     st.rerun()
 
-  st.write("")
-
-  # Button 3: Extended Disciplinary Question
   if st.button(
-      "🧠 Extended Disciplinary Question",
+      "🧠 Answer an Extended Question",
       use_container_width=True,
       disabled=not selected_subtopic,
   ):
@@ -310,11 +311,8 @@ if st.session_state.active_subtopic is None:
       )
     st.rerun()
 
-  st.write("")
-
-  # Button 4: Rewrite the Answer (Disciplinary Literacy)
   if st.button(
-      "✍️ Rewrite the Answer",
+      "✍️ Rewrite an Answer",
       use_container_width=True,
       disabled=not selected_subtopic,
   ):
@@ -330,8 +328,6 @@ if st.session_state.active_subtopic is None:
           full_topic_name, COURSE_TITLE, LEVEL
       )
     st.rerun()
-
-  st.markdown("</div>", unsafe_allow_html=True)
 
 # 2. Retrieval Quiz View (Forms-based)
 elif st.session_state.app_mode == "quiz":
