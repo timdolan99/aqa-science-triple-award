@@ -1,4 +1,4 @@
-# 🎓 MSc Socratic Coach for AQA GCSE Separate Sciences
+# 🎓 Socratic Coach for AQA GCSE Separate Sciences
 
 An adaptive Socratic tutoring system built for AQA GCSE Separate Sciences using LangGraph, LangChain, and Streamlit. This application dynamically ingests specification documents and guides students through computer science concepts using pedagogical scaffolding and safety-critical guardrails.
 
