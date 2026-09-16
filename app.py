@@ -75,7 +75,7 @@ def md_to_html(text: str) -> str:
     text = text.replace('\n', '<br>')
     return re.sub(r'(<br\s*/?>\s*)+', '<br>', text)
 
-# --- CSS Styling (Science Deep Cyan Theme) ---
+# --- CSS Styling (Science Deep Cyan Theme & Text Area High Visibility Override) ---
 st.markdown("""
     <style>
     .stApp { background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%); }
@@ -112,6 +112,25 @@ st.markdown("""
         background-color: #0284c7 !important;
         border-color: #0284c7 !important;
     }
+    /* Persistent Solid White Background & High Contrast Border for Text Areas */
+    div[data-baseweb="textarea"], 
+    div[data-baseweb="textarea"] > div,
+    textarea {
+        background-color: #ffffff !important;
+    }
+    div[data-baseweb="textarea"] {
+        border: 2px solid #0284c7 !important;
+        border-radius: 10px !important;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+    }
+    div[data-baseweb="textarea"]:focus-within {
+        border-color: #0369a1 !important;
+        box-shadow: 0 0 0 3px rgba(3, 105, 161, 0.3) !important;
+    }
+    textarea {
+        color: #0f172a !important;
+        font-size: 1rem !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -132,6 +151,8 @@ if "extended_question" not in st.session_state:
     st.session_state.extended_question = None
 if "extended_results" not in st.session_state:
     st.session_state.extended_results = None
+if "submitted_extended_answer" not in st.session_state:
+    st.session_state.submitted_extended_answer = ""
 if "rewrite_data" not in st.session_state:
     st.session_state.rewrite_data = None
 if "rewrite_results" not in st.session_state:
@@ -156,6 +177,7 @@ def reset_session():
     st.session_state.quiz_feedback = None
     st.session_state.extended_question = None
     st.session_state.extended_results = None
+    st.session_state.submitted_extended_answer = ""
     st.session_state.rewrite_data = None
     st.session_state.rewrite_results = None
     st.session_state.student_rewrite_submission = ""
@@ -401,11 +423,12 @@ elif st.session_state.app_mode == "extended":
             
             if st.button("Submit Extended Answer", type="primary", use_container_width=True):
                 if user_response.strip():
+                    st.session_state.submitted_extended_answer = user_response.strip()
                     with st.spinner("Evaluating scientific literacy and process explanation..."):
                         results = grade_extended_response(
                             sub_topic=st.session_state.active_topic,
                             question=q_text,
-                            student_answer=user_response,
+                            student_answer=user_response.strip(),
                             course_title=COURSE_TITLE,
                             level=LEVEL
                         )
@@ -415,6 +438,12 @@ elif st.session_state.app_mode == "extended":
                     st.warning("Please type an answer before submitting.")
         else:
             res = st.session_state.extended_results
+            
+            # Display Question & Submitted Response prominent at the top
+            with st.expander("📝 Your Submitted Extended Answer", expanded=True):
+                st.markdown(f"**Question:** {q_text}")
+                st.markdown(f"**Your Answer:**\n\n> {st.session_state.get('submitted_extended_answer', '')}")
+
             st.success(f"🎉 **Evaluation Complete! Score: {res.get('score', 0)} / {res.get('max_score', 6)} ({res.get('disciplinary_level', 'Developing')})**")
             
             st.markdown(f"**Strengths:** {res.get('strengths', '')}")
@@ -452,13 +481,13 @@ elif st.session_state.app_mode == "rewrite":
             
             if st.button("Submit Upgraded Rewrite", type="primary", use_container_width=True):
                 if student_rewrite.strip():
-                    st.session_state.student_rewrite_submission = student_rewrite
+                    st.session_state.student_rewrite_submission = student_rewrite.strip()
                     with st.spinner("Grading terminology upgrade..."):
                         results = grade_disciplinary_rewrite(
                             sub_topic=st.session_state.active_topic,
                             question=r_data.get('question'),
                             layman_answer=r_data.get('layman_answer'),
-                            student_rewrite=student_rewrite,
+                            student_rewrite=student_rewrite.strip(),
                             course_title=COURSE_TITLE,
                             level=LEVEL
                         )
