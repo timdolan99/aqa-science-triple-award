@@ -279,7 +279,8 @@ Use standard command words like 'Explain', 'Describe', 'Evaluate', or 'Compare'.
 Return ONLY the raw question text."""
     llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0.3)
     response = llm.invoke([HumanMessage(content=prompt)])
-    return response.content.strip()
+    raw_text = extract_clean_text(response)
+    return raw_text.strip()
 
 
 def grade_extended_response(sub_topic: str, question: str, student_answer: str, course_title: str = COURSE_TITLE, level: str = LEVEL) -> Dict[str, Any]:
