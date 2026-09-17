@@ -9,3 +9,5 @@ sentence-transformers
 langgraph
 chromadb
 pydantic
+pandas
+plotly
