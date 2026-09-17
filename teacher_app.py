@@ -5,6 +5,7 @@ import collections
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 # --- Load Dynamic Course Spec ---
 SPEC_PATH = "course_spec.json"
@@ -70,7 +71,6 @@ if df_raw.empty:
 # --- Dynamic Filter Generation ---
 st.sidebar.header("🎯 Filter Cohort Data")
 
-# Place near the top of your sidebar in teacher_app.py
 if st.sidebar.button("🔄 Refresh Analytics Data"):
     st.cache_data.clear()
     st.rerun()
@@ -163,3 +163,134 @@ with tab2:
         st.subheader("Performance Score Distribution")
         fig_score = px.histogram(filtered_df, x="score_pct", nbins=10, title="Cohort Score Range (%)", color_discrete_sequence=[THEME_PRIMARY])
         st.plotly_chart(fig_score, use_container_width=True)
+
+st.write("---")
+
+# --- Interactive AI Chatbot (Multi-Turn Conversational Analytics) ---
+st.subheader("💬 Interactive AI Telemetry Assistant")
+
+if "ai_chat_history" not in st.session_state:
+    st.session_state.ai_chat_history = []
+
+col_info, col_clear = st.columns([5, 1])
+with col_clear:
+    if st.button("🗑️ Reset Chat"):
+        st.session_state.ai_chat_history = []
+        st.rerun()
+
+def ask_ai_about_data(user_question, chat_history, db_path="analytics.db"):
+    schema_info = """
+    Table name: activity_logs
+    Columns:
+    - id (INTEGER PRIMARY KEY)
+    - timestamp (DATETIME)
+    - subject (TEXT) - e.g., 'AQA GCSE Separate Sciences (Biology)'
+    - level (TEXT) - e.g., 'GCSE/A-Level'
+    - unit (TEXT) - e.g., 'Cell Biology'
+    - subtopic (TEXT) - e.g., 'Mitosis and the Cell Cycle'
+    - app_mode (TEXT) - 'socratic', 'quiz', 'extended', 'rewrite'
+    - score_pct (REAL) - percentage score (0-100)
+    - keywords_used (TEXT JSON array string)
+    - keywords_missed (TEXT JSON array string)
+    - misconception_flag (INTEGER) - 1 if misconception detected, else 0
+    """
+
+    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0.0)
+
+    # Build context from previous conversation turns
+    context_str = ""
+    for msg in chat_history:
+        context_str += f"Teacher: {msg['question']}\nSQL Executed: {msg['sql']}\nInsight: {msg['summary']}\n\n"
+
+    sql_prompt = f"""
+    You are an expert SQLite data analyst for a secondary school teaching team.
+    Given the SQLite table schema below and previous context, write a SINGLE valid, read-only SELECT query to answer the teacher's latest question or follow-up.
+    Do NOT include markdown fences (like ```sql), code blocks, or commentary—output ONLY the plain SQL query text.
+
+    Schema:
+    {schema_info}
+
+    Previous Conversation Context:
+    {context_str}
+
+    Latest Question / Follow-up: {user_question}
+    """
+    
+    response_obj = llm.invoke(sql_prompt)
+    raw_content = response_obj.content
+    if isinstance(raw_content, list):
+        raw_text = "".join([str(block.get("text", block)) if isinstance(block, dict) else str(block) for block in raw_content])
+    else:
+        raw_text = str(raw_content)
+
+    # Clean markdown formatting if present
+    sql_query = raw_text.strip()
+    if sql_query.startswith("```"):
+        sql_query = sql_query.split("\n", 1)[-1]
+    if sql_query.endswith("```"):
+        sql_query = sql_query.rsplit("```", 1)[0]
+    sql_query = sql_query.replace("```sql", "").strip()
+
+    try:
+        conn = sqlite3.connect(db_path)
+        df_result = pd.read_sql_query(sql_query, conn)
+        conn.close()
+    except Exception as e:
+        return f"❌ Query execution error: `{sql_query}`\n\nDetails: {str(e)}", None, sql_query
+
+    synthesis_prompt = f"""
+    You are an Assistant Headteacher evaluating learning analytics.
+    Synthesize the query results into a concise 2-3 sentence insight for a teacher, answering their follow-up question directly.
+
+    Teacher Question: {user_question}
+    Executed SQL Query: {sql_query}
+    Query Results:
+    {df_result.to_string(index=False)}
+    """
+    
+    syn_response = llm.invoke(synthesis_prompt)
+    syn_content = syn_response.content
+    if isinstance(syn_content, list):
+        summary = "".join([str(b.get("text", b)) if isinstance(b, dict) else str(b) for b in syn_content])
+    else:
+        summary = str(syn_content)
+
+    return summary, df_result, sql_query
+
+
+# --- Render Active Chat Stream ---
+for entry in st.session_state.ai_chat_history:
+    with st.chat_message("user"):
+        st.write(entry["question"])
+    with st.chat_message("assistant"):
+        st.markdown(f"**AI Insight:** {entry['summary']}")
+        with st.expander("📊 View SQL Query & Raw Data Table"):
+            st.code(entry["sql"], language="sql")
+            st.dataframe(entry["df"], use_container_width=True)
+
+# --- Chat Input for Questions & Follow-ups ---
+teacher_query = st.chat_input("Ask an initial or follow-up question about cohort telemetry...")
+
+if teacher_query:
+    with st.chat_message("user"):
+        st.write(teacher_query)
+        
+    with st.chat_message("assistant"):
+        with st.spinner("Analyzing database..."):
+            summary, df_res, sql_used = ask_ai_about_data(teacher_query, st.session_state.ai_chat_history)
+            
+            if df_res is not None:
+                st.markdown(f"**AI Insight:** {summary}")
+                with st.expander("📊 View SQL Query & Raw Data Table"):
+                    st.code(sql_used, language="sql")
+                    st.dataframe(df_res, use_container_width=True)
+                
+                # Save to session chat thread
+                st.session_state.ai_chat_history.append({
+                    "question": teacher_query,
+                    "summary": summary,
+                    "sql": sql_used,
+                    "df": df_res
+                })
+            else:
+                st.error(summary)
