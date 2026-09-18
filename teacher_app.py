@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import sqlite3
 import collections
@@ -178,6 +179,10 @@ with col_clear:
         st.session_state.ai_chat_history = []
         st.rerun()
 
+def clean_html_formatting(text):
+    """Strips raw HTML tags like <u> to ensure clean copy-pasting."""
+    return re.sub(r'</?[a-zA-Z0-9]+[^>]*>', '', text)
+
 def ask_ai_about_data(user_question, chat_history, db_path="analytics.db"):
     schema_info = """
     Table name: activity_logs
@@ -195,35 +200,75 @@ def ask_ai_about_data(user_question, chat_history, db_path="analytics.db"):
     - misconception_flag (INTEGER) - 1 if misconception detected, else 0
     """
 
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0.0)
+    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0.2)
 
-    # Build context from previous conversation turns
-    context_str = ""
+    full_transcript = ""
     for msg in chat_history:
-        context_str += f"Teacher: {msg['question']}\nSQL Executed: {msg['sql']}\nInsight: {msg['summary']}\n\n"
+        full_transcript += f"Teacher: {msg['question']}\nAI Assistant: {msg['summary']}\n\n"
 
+    # --- Step 1: Classify Intent ---
+    intent_prompt = f"""
+    Analyze the teacher's latest message based on the conversation transcript.
+    
+    Transcript:
+    {full_transcript}
+    
+    Latest Message: "{user_question}"
+    
+    Is the teacher asking to:
+    A) Query/fetch NEW data from the database (e.g., scores, counts, top missed terms, new subtopic search)?
+    B) Refine, reformat, expand, or follow up on previously generated text/questions (e.g., remove options, format answers, bold terms, rephrase response)?
+    
+    Respond with ONLY the single letter 'A' or 'B'.
+    """
+    
+    intent_resp = llm.invoke(intent_prompt)
+    intent_raw = intent_resp.content
+    intent_text = "".join([str(b.get("text", b)) if isinstance(b, dict) else str(b) for b in intent_raw]) if isinstance(intent_raw, list) else str(intent_raw)
+    intent = intent_text.strip().upper()
+
+    # --- PATH B: Refinement / Content Follow-up (No SQL Executed) ---
+    if "B" in intent and chat_history:
+        refine_prompt = f"""
+        You are an expert pedagogical assistant for secondary school teachers.
+        
+        Full Conversation History:
+        {full_transcript}
+        
+        Teacher's Refinement Request: {user_question}
+        
+        CRITICAL FORMATTING INSTRUCTION:
+        Do NOT output raw HTML tags (e.g., do NOT use <u>, <i>, <b>). Use standard Markdown bolding (**key term**) for emphasis.
+
+        Directly address the request by building on the EXACT questions or text generated in the previous assistant message.
+        Do NOT query new database terms. Maintain complete continuity with the previous output.
+        """
+        
+        refine_resp = llm.invoke(refine_prompt)
+        refine_content = refine_resp.content
+        summary = "".join([str(b.get("text", b)) if isinstance(b, dict) else str(b) for b in refine_content]) if isinstance(refine_content, list) else str(refine_content)
+        summary = clean_html_formatting(summary)
+        
+        last_sql = chat_history[-1].get("sql", "N/A (Refinement of previous response)")
+        last_df = chat_history[-1].get("df", pd.DataFrame())
+        return summary, last_df, f"-- [Refinement Task: Reusing previous context]\n-- Previous SQL:\n{last_sql}"
+
+    # --- PATH A: New Data Retrieval (Text-to-SQL) ---
     sql_prompt = f"""
     You are an expert SQLite data analyst for a secondary school teaching team.
-    Given the SQLite table schema below and previous context, write a SINGLE valid, read-only SELECT query to answer the teacher's latest question or follow-up.
+    Given the SQLite table schema below and previous context, write a SINGLE valid, read-only SELECT query to answer the teacher's latest question.
     Do NOT include markdown fences (like ```sql), code blocks, or commentary—output ONLY the plain SQL query text.
 
     Schema:
     {schema_info}
 
-    Previous Conversation Context:
-    {context_str}
-
-    Latest Question / Follow-up: {user_question}
+    Latest Question: {user_question}
     """
     
     response_obj = llm.invoke(sql_prompt)
     raw_content = response_obj.content
-    if isinstance(raw_content, list):
-        raw_text = "".join([str(block.get("text", block)) if isinstance(block, dict) else str(block) for block in raw_content])
-    else:
-        raw_text = str(raw_content)
+    raw_text = "".join([str(block.get("text", block)) if isinstance(block, dict) else str(block) for block in raw_content]) if isinstance(raw_content, list) else str(raw_content)
 
-    # Clean markdown formatting if present
     sql_query = raw_text.strip()
     if sql_query.startswith("```"):
         sql_query = sql_query.split("\n", 1)[-1]
@@ -239,31 +284,41 @@ def ask_ai_about_data(user_question, chat_history, db_path="analytics.db"):
         return f"❌ Query execution error: `{sql_query}`\n\nDetails: {str(e)}", None, sql_query
 
     synthesis_prompt = f"""
-    You are an Assistant Headteacher evaluating learning analytics.
-    Synthesize the query results into a concise 2-3 sentence insight for a teacher, answering their follow-up question directly.
+    You are an Assistant Headteacher evaluating learning analytics and creating classroom resources.
+    Synthesize the query results into a concise, professional response that directly fulfills the teacher's request.
+    
+    CRITICAL FORMATTING INSTRUCTION:
+    Do NOT use HTML tags (e.g., <u>, <b>). Use standard Markdown bolding (**term**) for key terms.
 
     Teacher Question: {user_question}
-    Executed SQL Query: {sql_query}
     Query Results:
     {df_result.to_string(index=False)}
     """
     
     syn_response = llm.invoke(synthesis_prompt)
     syn_content = syn_response.content
-    if isinstance(syn_content, list):
-        summary = "".join([str(b.get("text", b)) if isinstance(b, dict) else str(b) for b in syn_content])
-    else:
-        summary = str(syn_content)
+    summary = "".join([str(b.get("text", b)) if isinstance(b, dict) else str(b) for b in syn_content]) if isinstance(syn_content, list) else str(syn_content)
+    summary = clean_html_formatting(summary)
 
     return summary, df_result, sql_query
 
 
 # --- Render Active Chat Stream ---
-for entry in st.session_state.ai_chat_history:
+for idx, entry in enumerate(st.session_state.ai_chat_history):
     with st.chat_message("user"):
         st.write(entry["question"])
     with st.chat_message("assistant"):
-        st.markdown(f"**AI Insight:** {entry['summary']}")
+        st.markdown(f"**AI Insight:**\n\n{entry['summary']}")
+        
+        # Action Toolbar: One-Click Download Button
+        st.download_button(
+            label="📥 Download Generated Starter / Resource (.txt)",
+            data=entry["summary"],
+            file_name=f"retrieval_starter_{idx + 1}.txt",
+            mime="text/plain",
+            key=f"dl_{idx}"
+        )
+        
         with st.expander("📊 View SQL Query & Raw Data Table"):
             st.code(entry["sql"], language="sql")
             st.dataframe(entry["df"], use_container_width=True)
@@ -280,7 +335,17 @@ if teacher_query:
             summary, df_res, sql_used = ask_ai_about_data(teacher_query, st.session_state.ai_chat_history)
             
             if df_res is not None:
-                st.markdown(f"**AI Insight:** {summary}")
+                st.markdown(f"**AI Insight:**\n\n{summary}")
+                
+                # Immediate Download Button for Current Turn
+                st.download_button(
+                    label="📥 Download Generated Starter / Resource (.txt)",
+                    data=summary,
+                    file_name=f"retrieval_starter_{len(st.session_state.ai_chat_history) + 1}.txt",
+                    mime="text/plain",
+                    key=f"dl_live_{len(st.session_state.ai_chat_history)}"
+                )
+                
                 with st.expander("📊 View SQL Query & Raw Data Table"):
                     st.code(sql_used, language="sql")
                     st.dataframe(df_res, use_container_width=True)
