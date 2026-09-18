@@ -1,33 +1,21 @@
 import os
 import json
-import sqlite3
 import random
 from datetime import datetime, timedelta
+import pandas as pd
+from sqlalchemy import create_engine
+import streamlit as st
 
-DB_NAME = "analytics.db"
 SPEC_PATH = "course_spec.json"
 
-def setup_database():
-    """Creates the SQLite database file and activity_logs table if they don't exist."""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS activity_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            subject TEXT NOT NULL,
-            level TEXT NOT NULL,
-            unit TEXT NOT NULL,
-            subtopic TEXT NOT NULL,
-            app_mode TEXT NOT NULL,
-            score_pct REAL NOT NULL,
-            keywords_used TEXT,
-            keywords_missed TEXT,
-            misconception_flag INTEGER DEFAULT 0
-        )
-    """)
-    conn.commit()
-    conn.close()
+def get_db_engine():
+    """Retrieves the Supabase connection string from secrets.toml securely."""
+    try:
+        db_url = st.secrets["postgres"]["url"]
+        return create_engine(db_url, pool_pre_ping=True)
+    except Exception as e:
+        print(f"❌ Could not load database URL from st.secrets: {e}")
+        return None
 
 def extract_spec_hierarchy(spec_data):
     """Recursively extracts subject, unit, and subtopic records from course_spec.json."""
@@ -58,8 +46,6 @@ def extract_spec_hierarchy(spec_data):
     return records
 
 def generate_synthetic_data(num_entries=200):
-    setup_database()
-
     if not os.path.exists(SPEC_PATH):
         print(f"❌ Error: {SPEC_PATH} not found. Please ensure course_spec.json exists.")
         return
@@ -75,9 +61,8 @@ def generate_synthetic_data(num_entries=200):
         return
 
     modes = ["socratic", "quiz", "extended", "rewrite"]
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
     now = datetime.now()
+    logs = []
 
     for _ in range(num_entries):
         target = random.choice(spec_records)
@@ -86,7 +71,7 @@ def generate_synthetic_data(num_entries=200):
         
         days_ago = random.randint(0, 14)
         hours_ago = random.randint(0, 23)
-        timestamp = (now - timedelta(days=days_ago, hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = now - timedelta(days=days_ago, hours=hours_ago)
 
         words = [w.strip(",.()").lower() for w in target["subtopic"].split() if len(w) > 3]
         if not words:
@@ -100,26 +85,27 @@ def generate_synthetic_data(num_entries=200):
         missed = chosen_kws[split_idx:]
         misconception_flag = 1 if score_pct < 50.0 and random.random() > 0.35 else 0
 
-        cursor.execute("""
-            INSERT INTO activity_logs 
-            (timestamp, subject, level, unit, subtopic, app_mode, score_pct, keywords_used, keywords_missed, misconception_flag)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            timestamp, 
-            target["subject"], 
-            level, 
-            target["unit"], 
-            target["subtopic"],
-            mode, 
-            score_pct, 
-            json.dumps(used), 
-            json.dumps(missed), 
-            misconception_flag
-        ))
+        logs.append({
+            "timestamp": timestamp,
+            "subject": target["subject"],
+            "level": level,
+            "unit": target["unit"],
+            "subtopic": target["subtopic"],
+            "app_mode": mode,
+            "score_pct": score_pct,
+            "keywords_used": json.dumps(used),
+            "keywords_missed": json.dumps(missed),
+            "misconception_flag": misconception_flag
+        })
 
-    conn.commit()
-    conn.close()
-    print(f"✅ Created {DB_NAME} and inserted {num_entries} synthetic log entries successfully!")
+    engine = get_db_engine()
+    if engine:
+        try:
+            df = pd.DataFrame(logs)
+            df.to_sql("activity_logs", engine, if_exists="append", index=False)
+            print(f"✅ Successfully inserted {num_entries} synthetic log entries into Supabase PostgreSQL!")
+        except Exception as e:
+            print(f"❌ Failed to push data to Supabase: {e}")
 
 if __name__ == "__main__":
     user_input = input("Enter number of synthetic records to generate [default: 200]: ").strip()

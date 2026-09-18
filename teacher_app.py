@@ -1,11 +1,11 @@
 import os
 import re
 import json
-import sqlite3
 import collections
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+from sqlalchemy import create_engine, text
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 # --- Load Dynamic Course Spec ---
@@ -21,7 +21,16 @@ else:
 
 COURSE_TITLE = COURSE_SPEC.get("course_title", "Socratic Coach")
 LEVEL = COURSE_SPEC.get("level", "GCSE/A-Level")
-DB_NAME = "analytics.db"
+
+# --- Database Connection Helper ---
+def get_db_engine():
+    """Retrieves SQLAlchemy engine using Supabase credentials in secrets.toml."""
+    try:
+        db_url = st.secrets["postgres"]["url"]
+        return create_engine(db_url, pool_pre_ping=True)
+    except Exception as e:
+        st.error(f"❌ Database secret configuration error: {e}")
+        return None
 
 # --- Page Setup & Dynamic Styling ---
 st.set_page_config(page_title=f"{COURSE_TITLE} - Teacher Console", layout="wide", page_icon="📊")
@@ -55,18 +64,23 @@ st.markdown(f"""
 st.markdown(f'<div class="console-header">📊 {COURSE_TITLE} ({LEVEL}) Teacher Analytics Console</div>', unsafe_allow_html=True)
 
 # --- Database Fetch Helper ---
+@st.cache_data(ttl=60)
 def load_data():
-    if not os.path.exists(DB_NAME):
+    engine = get_db_engine()
+    if engine is None:
         return pd.DataFrame()
-    conn = sqlite3.connect(DB_NAME)
-    df = pd.read_sql_query("SELECT * FROM activity_logs", conn)
-    conn.close()
-    return df
+    try:
+        query = "SELECT * FROM activity_logs ORDER BY timestamp DESC;"
+        df = pd.read_sql_query(query, engine)
+        return df
+    except Exception as e:
+        st.error(f"❌ Error loading data from Supabase: {e}")
+        return pd.DataFrame()
 
 df_raw = load_data()
 
 if df_raw.empty:
-    st.warning("⚠️ No analytics data found in `analytics.db`. Please run `generate_test_data.py` first to populate test logs.")
+    st.warning("⚠️ No analytics data found in Supabase. Please run `generate_test_data.py` first to populate test logs.")
     st.stop()
 
 # --- Dynamic Filter Generation ---
@@ -183,12 +197,12 @@ def clean_html_formatting(text):
     """Strips raw HTML tags like <u> to ensure clean copy-pasting."""
     return re.sub(r'</?[a-zA-Z0-9]+[^>]*>', '', text)
 
-def ask_ai_about_data(user_question, chat_history, db_path="analytics.db"):
+def ask_ai_about_data(user_question, chat_history):
     schema_info = """
-    Table name: activity_logs
+    Table name: activity_logs (PostgreSQL)
     Columns:
-    - id (INTEGER PRIMARY KEY)
-    - timestamp (DATETIME)
+    - id (SERIAL PRIMARY KEY)
+    - timestamp (TIMESTAMPTZ)
     - subject (TEXT) - e.g., 'AQA GCSE Separate Sciences (Biology)'
     - level (TEXT) - e.g., 'GCSE/A-Level'
     - unit (TEXT) - e.g., 'Cell Biology'
@@ -253,11 +267,11 @@ def ask_ai_about_data(user_question, chat_history, db_path="analytics.db"):
         last_df = chat_history[-1].get("df", pd.DataFrame())
         return summary, last_df, f"-- [Refinement Task: Reusing previous context]\n-- Previous SQL:\n{last_sql}"
 
-    # --- PATH A: New Data Retrieval (Text-to-SQL) ---
+    # --- PATH A: New Data Retrieval (Text-to-SQL for PostgreSQL) ---
     sql_prompt = f"""
-    You are an expert SQLite data analyst for a secondary school teaching team.
-    Given the SQLite table schema below and previous context, write a SINGLE valid, read-only SELECT query to answer the teacher's latest question.
-    Do NOT include markdown fences (like ```sql), code blocks, or commentary—output ONLY the plain SQL query text.
+    You are an expert PostgreSQL data analyst for a secondary school teaching team.
+    Given the PostgreSQL table schema below and previous context, write a SINGLE valid, read-only SELECT query to answer the teacher's latest question.
+    Use PostgreSQL syntax. Do NOT include markdown fences (like ```sql), code blocks, or commentary—output ONLY the plain SQL query text.
 
     Schema:
     {schema_info}
@@ -277,9 +291,9 @@ def ask_ai_about_data(user_question, chat_history, db_path="analytics.db"):
     sql_query = sql_query.replace("```sql", "").strip()
 
     try:
-        conn = sqlite3.connect(db_path)
-        df_result = pd.read_sql_query(sql_query, conn)
-        conn.close()
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            df_result = pd.read_sql_query(text(sql_query), conn)
     except Exception as e:
         return f"❌ Query execution error: `{sql_query}`\n\nDetails: {str(e)}", None, sql_query
 
@@ -302,7 +316,6 @@ def ask_ai_about_data(user_question, chat_history, db_path="analytics.db"):
 
     return summary, df_result, sql_query
 
-
 # --- Render Active Chat Stream ---
 for idx, entry in enumerate(st.session_state.ai_chat_history):
     with st.chat_message("user"):
@@ -310,7 +323,6 @@ for idx, entry in enumerate(st.session_state.ai_chat_history):
     with st.chat_message("assistant"):
         st.markdown(f"**AI Insight:**\n\n{entry['summary']}")
         
-        # Action Toolbar: One-Click Download Button
         st.download_button(
             label="📥 Download Generated Starter / Resource (.txt)",
             data=entry["summary"],
@@ -331,13 +343,12 @@ if teacher_query:
         st.write(teacher_query)
         
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing database..."):
+        with st.spinner("Analyzing Supabase database..."):
             summary, df_res, sql_used = ask_ai_about_data(teacher_query, st.session_state.ai_chat_history)
             
             if df_res is not None:
                 st.markdown(f"**AI Insight:**\n\n{summary}")
                 
-                # Immediate Download Button for Current Turn
                 st.download_button(
                     label="📥 Download Generated Starter / Resource (.txt)",
                     data=summary,
@@ -350,7 +361,6 @@ if teacher_query:
                     st.code(sql_used, language="sql")
                     st.dataframe(df_res, use_container_width=True)
                 
-                # Save to session chat thread
                 st.session_state.ai_chat_history.append({
                     "question": teacher_query,
                     "summary": summary,

@@ -2,8 +2,31 @@ import os
 import json
 import re
 import importlib
+from datetime import datetime
+import pandas as pd
+from sqlalchemy import create_engine
 from langchain_core.messages import HumanMessage, AIMessage
 import streamlit as st
+
+# --- Telemetry Logging Helper (Supabase PostgreSQL) ---
+def get_db_engine():
+    """Retrieves SQLAlchemy engine using Supabase credentials in secrets.toml."""
+    try:
+        db_url = st.secrets["postgres"]["url"]
+        return create_engine(db_url, pool_pre_ping=True)
+    except Exception as e:
+        return None
+
+def log_session_activity(log_data: dict):
+    """Pushes student session completion telemetry directly to Supabase activity_logs table."""
+    try:
+        engine = get_db_engine()
+        if engine:
+            df_log = pd.DataFrame([log_data])
+            df_log.to_sql("activity_logs", engine, if_exists="append", index=False)
+    except Exception as e:
+        # Non-blocking telemetry warning to preserve student UX
+        pass
 
 # Ensure API Key is set BEFORE loading socratic_fsm
 if "GOOGLE_API_KEY" in st.secrets:
@@ -75,7 +98,7 @@ def md_to_html(text: str) -> str:
     text = text.replace('\n', '<br>')
     return re.sub(r'(<br\s*/?>\s*)+', '<br>', text)
 
-# --- CSS Styling (Science Deep Cyan Theme & Text Area High Visibility Override) ---
+# --- CSS Styling ---
 st.markdown("""
     <style>
     .stApp { background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%); }
@@ -112,7 +135,6 @@ st.markdown("""
         background-color: #0284c7 !important;
         border-color: #0284c7 !important;
     }
-    /* Persistent Solid White Background & High Contrast Border for Text Areas */
     div[data-baseweb="textarea"], 
     div[data-baseweb="textarea"] > div,
     textarea {
@@ -135,6 +157,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Session State Initialisation ---
+if "active_subject" not in st.session_state:
+    st.session_state.active_subject = COURSE_TITLE
 if "active_unit" not in st.session_state:
     st.session_state.active_unit = None
 if "active_topic" not in st.session_state:
@@ -211,6 +235,7 @@ if st.session_state.active_topic is None:
         subtopics = units_dict.get(sel_unit, [])
         sel_subtopic = st.selectbox("🔍 Step 3: Choose Specific Subtopic:", options=subtopics)
         
+        target_subject_name = f"{COURSE_TITLE} ({sel_subject})"
         target_unit_name = sel_unit
         target_subtopic_name = sel_subtopic
         full_query = f"{sel_subject} - {sel_unit}: {sel_subtopic}"
@@ -220,15 +245,16 @@ if st.session_state.active_topic is None:
         subtopics = raw_structure.get(sel_unit, [])
         sel_subtopic = st.selectbox("🔍 Step 2: Choose Specific Subtopic:", options=subtopics)
         
+        target_subject_name = COURSE_TITLE
         target_unit_name = sel_unit
         target_subtopic_name = sel_subtopic
         full_query = sel_subtopic
 
     st.write("")
 
-    # 4 Action Buttons with Science Symbols
     if st.button("⚛️ Start a Socratic Session", type="primary", use_container_width=True):
         st.session_state.app_mode = "socratic"
+        st.session_state.active_subject = target_subject_name
         st.session_state.active_unit = target_unit_name
         st.session_state.active_topic = target_subtopic_name
         st.session_state.graph_state["sub_topic"] = full_query
@@ -236,6 +262,7 @@ if st.session_state.active_topic is None:
 
     if st.button("🧬 Take a Retrieval Quiz", use_container_width=True):
         st.session_state.app_mode = "quiz"
+        st.session_state.active_subject = target_subject_name
         st.session_state.active_unit = target_unit_name
         st.session_state.active_topic = target_subtopic_name
         with st.spinner("Generating specification retrieval questions..."):
@@ -246,6 +273,7 @@ if st.session_state.active_topic is None:
 
     if st.button("🧲 Answer an Extended Question", use_container_width=True):
         st.session_state.app_mode = "extended"
+        st.session_state.active_subject = target_subject_name
         st.session_state.active_unit = target_unit_name
         st.session_state.active_topic = target_subtopic_name
         with st.spinner("Generating high-tier extended response scenario..."):
@@ -254,6 +282,7 @@ if st.session_state.active_topic is None:
 
     if st.button("🥼 Rewrite an Answer", use_container_width=True):
         st.session_state.app_mode = "rewrite"
+        st.session_state.active_subject = target_subject_name
         st.session_state.active_unit = target_unit_name
         st.session_state.active_topic = target_subtopic_name
         with st.spinner("Generating informal response scenario..."):
@@ -326,6 +355,22 @@ elif st.session_state.app_mode == "socratic":
             st.session_state.messages.append({"role": "tutor", "content": ai_reply, "style": "tutor-msg"})
 
         st.session_state.graph_state = updated_state
+        
+        # Log telemetry on completion of Socratic dialogue
+        if current_student_turns >= TARGET_TURNS:
+            log_session_activity({
+                "timestamp": datetime.now(),
+                "subject": st.session_state.active_subject,
+                "level": LEVEL,
+                "unit": st.session_state.active_unit,
+                "subtopic": st.session_state.active_topic,
+                "app_mode": "socratic",
+                "score_pct": 100.0,
+                "keywords_used": json.dumps([]),
+                "keywords_missed": json.dumps([]),
+                "misconception_flag": 0
+            })
+            
         st.rerun()
 
 # --- Quiz Mode View ---
@@ -364,6 +409,32 @@ elif st.session_state.app_mode == "quiz":
                             level=LEVEL
                         )
                         st.session_state.quiz_feedback = feedback
+                        
+                        # Calculate and push telemetry log to Supabase
+                        breakdown = feedback.get("breakdown", [])
+                        total_score = feedback.get("total_score", 0)
+                        max_score = len(breakdown) if breakdown else len(questions)
+                        score_pct = round((total_score / max_score) * 100.0, 1) if max_score > 0 else 0.0
+                        
+                        all_used = []
+                        all_missed = []
+                        for item in breakdown:
+                            all_used.extend(item.get("keywords_used", []))
+                            all_missed.extend(item.get("keywords_missed", []))
+                            
+                        log_session_activity({
+                            "timestamp": datetime.now(),
+                            "subject": st.session_state.active_subject,
+                            "level": LEVEL,
+                            "unit": st.session_state.active_unit,
+                            "subtopic": st.session_state.active_topic,
+                            "app_mode": "quiz",
+                            "score_pct": score_pct,
+                            "keywords_used": json.dumps(all_used),
+                            "keywords_missed": json.dumps(all_missed),
+                            "misconception_flag": 1 if score_pct < 50.0 else 0
+                        })
+                        
                         st.rerun()
         else:
             feedback_data = st.session_state.quiz_feedback
@@ -433,13 +504,31 @@ elif st.session_state.app_mode == "extended":
                             level=LEVEL
                         )
                         st.session_state.extended_results = results
+                        
+                        # Log telemetry on extended answer submission
+                        score = results.get("score", 0)
+                        max_score = results.get("max_score", 6)
+                        score_pct = round((score / max_score) * 100.0, 1) if max_score > 0 else 0.0
+                        
+                        log_session_activity({
+                            "timestamp": datetime.now(),
+                            "subject": st.session_state.active_subject,
+                            "level": LEVEL,
+                            "unit": st.session_state.active_unit,
+                            "subtopic": st.session_state.active_topic,
+                            "app_mode": "extended",
+                            "score_pct": score_pct,
+                            "keywords_used": json.dumps(results.get("keywords_used", [])),
+                            "keywords_missed": json.dumps(results.get("keywords_missed", [])),
+                            "misconception_flag": 1 if score_pct < 50.0 else 0
+                        })
+                        
                         st.rerun()
                 else:
                     st.warning("Please type an answer before submitting.")
         else:
             res = st.session_state.extended_results
             
-            # Display Question & Submitted Response prominent at the top
             with st.expander("📝 Your Submitted Extended Answer", expanded=True):
                 st.markdown(f"**Question:** {q_text}")
                 st.markdown(f"**Your Answer:**\n\n> {st.session_state.get('submitted_extended_answer', '')}")
@@ -492,6 +581,25 @@ elif st.session_state.app_mode == "rewrite":
                             level=LEVEL
                         )
                         st.session_state.rewrite_results = results
+                        
+                        # Log telemetry on rewrite answer submission
+                        score = results.get("score", 0)
+                        max_score = results.get("max_score", 4)
+                        score_pct = round((score / max_score) * 100.0, 1) if max_score > 0 else 0.0
+                        
+                        log_session_activity({
+                            "timestamp": datetime.now(),
+                            "subject": st.session_state.active_subject,
+                            "level": LEVEL,
+                            "unit": st.session_state.active_unit,
+                            "subtopic": st.session_state.active_topic,
+                            "app_mode": "rewrite",
+                            "score_pct": score_pct,
+                            "keywords_used": json.dumps(results.get("key_terms_used", [])),
+                            "keywords_missed": json.dumps(results.get("missed_terms", [])),
+                            "misconception_flag": 1 if score_pct < 50.0 else 0
+                        })
+                        
                         st.rerun()
                 else:
                     st.warning("Please type a rewrite before submitting.")
@@ -499,7 +607,6 @@ elif st.session_state.app_mode == "rewrite":
             res = st.session_state.rewrite_results
             st.success(f"🎉 **Rewrite Graded! Score: {res.get('score', 0)} / {res.get('max_score', 4)}**")
             
-            # Context Comparison Display
             with st.expander("📌 View Question & Your Submission", expanded=True):
                 st.markdown(f"**Question:** {r_data.get('question')}")
                 st.markdown(f"**Original Informal Draft:** *\"{r_data.get('layman_answer')}\"*")

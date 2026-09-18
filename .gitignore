@@ -1,3 +1,13 @@
+# Streamlit local secrets (contains Supabase password & Gemini API key)
 .streamlit/secrets.toml
+
+# SQLite Database files
+*.db
+analytics.db
+
+# Python virtual environment & cache
 __pycache__/
-.DS_Store
+*.pyc
+.env
+venv/
+.venv/
