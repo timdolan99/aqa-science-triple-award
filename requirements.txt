@@ -11,3 +11,5 @@ chromadb
 pydantic
 pandas
 plotly
+sqlalchemy
+psycopg2-binary
