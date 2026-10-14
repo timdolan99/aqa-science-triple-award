@@ -1,13 +1,23 @@
 import json
 import os
 import re
-from typing import List, TypedDict, Dict, Any
+from typing import Any, Dict, List, TypedDict
 
+import streamlit as st
 from langchain_chroma import Chroma
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEmbeddings
 from langgraph.graph import END, StateGraph
+
+# --- Robust Global API Key Retrieval for Streamlit Cloud & Local ---
+def _get_google_api_key():
+    key = st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if isinstance(key, dict) or hasattr(key, "get"):
+        return key.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    return key
+
+API_KEY = _get_google_api_key()
 
 # --- Load dynamic course specification ---
 SPEC_PATH = "course_spec.json"
@@ -18,8 +28,12 @@ else:
     COURSE_SPEC = {}
 
 COURSE_TITLE = COURSE_SPEC.get("course_title", "AQA GCSE Separate Sciences")
+SUBJECT = COURSE_SPEC.get("subject", "Science")
 LEVEL = COURSE_SPEC.get("level", "GCSE")
 TARGET_TURNS = COURSE_SPEC.get("target_turns", 5)
+
+# Primary database table target for Science telemetry
+DB_TABLE_NAME = "activity_logs_science"
 
 
 class ChatState(TypedDict, total=False):
@@ -27,13 +41,38 @@ class ChatState(TypedDict, total=False):
     sub_topic: str
     turn_count: int
     is_final_turn: bool
+    is_freestyle: bool
+
+
+# --- PERFORMANCE OPTIMIZATION: CACHED MODELS & VECTOR DB ---
+@st.cache_resource
+def get_embeddings():
+    """Cache the HuggingFace embedding model in memory to avoid reload latency."""
+    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+
+@st.cache_resource
+def get_vector_db():
+    """Cache persistent ChromaDB instance for Science across session renders."""
+    embeddings = get_embeddings()
+    return Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
+
+
+@st.cache_resource
+def get_llm(temperature: float = 0.2, streaming: bool = False):
+    """Cache Gemini client instances to avoid repeated connection setup."""
+    return ChatGoogleGenerativeAI(
+        model="gemini-3.6-flash",
+        google_api_key=API_KEY,
+        temperature=temperature,
+        streaming=streaming
+    )
 
 
 def get_context(sub_topic: str, user_query: str) -> str:
     """Retrieves relevant specification chunks from local ChromaDB store."""
     try:
-        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        db = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
+        db = get_vector_db()
         results = db.similarity_search(f"{sub_topic} {user_query}", k=3)
         return "\n\n".join([doc.page_content for doc in results]) if results else ""
     except Exception:
@@ -61,9 +100,33 @@ def extract_clean_text(response) -> str:
     return str(response)
 
 
-# --- Live Streaming Generator for Streamlit UI ---
+def verify_topic_alignment(custom_prompt: str) -> Dict[str, Any]:
+    """Guardrail: Fast check ensuring custom science prompts align with curriculum scope."""
+    context = get_context(custom_prompt, custom_prompt)
+    prompt = f"""You are an expert {COURSE_TITLE} ({LEVEL}) examiner.
+Verify if the following student question or topic aligns with the specification or broader science curriculum scope.
+
+Student Custom Prompt: "{custom_prompt}"
+Syllabus Context snippet:
+{context}
+
+Return ONLY a JSON object:
+{{
+  "is_aligned": true,
+  "reasoning": "Brief note on how it connects to core scientific processes, concepts, formulas, or experimental methods.",
+  "suggested_pivot": "If not aligned, suggest an aligned topic/question close to their entry."
+}}"""
+
+    llm = get_llm(temperature=0.1, streaming=False)
+    response = llm.invoke([HumanMessage(content=prompt)])
+    clean_text = extract_clean_text(response)
+    clean_text = re.sub(r"```json|```", "", clean_text).strip()
+    return json.loads(clean_text)
+
+
+# --- Live Streaming Generators ---
 def stream_socratic_response(messages: list, sub_topic: str):
-    """Streams response tokens directly from Gemini for real-time UI rendering."""
+    """Streams response tokens directly using cached streaming client."""
     user_query = messages[-1].content if messages else ""
     context = get_context(sub_topic, user_query)
 
@@ -87,9 +150,50 @@ PEDAGOGICAL & DISCIPLINARY LITERACY DIRECTIVES:
   * "Evaluate": Require students to balance pros and cons before making a conclusion.
 - Disciplinary Precision: Enforce exact specification vocabulary, accurate mathematical/unit notation, and correct underlying scientific mechanisms while trapping common misconceptions."""
 
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", streaming=True)
+    llm = get_llm(temperature=0.2, streaming=True)
     messages_to_send = [SystemMessage(content=system_prompt)] + list(messages)
-    
+
+    for chunk in llm.stream(messages_to_send):
+        if chunk.content:
+            yield chunk.content
+
+
+def stream_freestyle_socratic_response(messages: list, custom_prompt: str, focus_mode: str = "Scientific Explanations & Cause/Effect"):
+    """Streams response tokens for uncapped Socratic sessions using cached streaming client."""
+    user_query = messages[-1].content if messages else ""
+    context = get_context(custom_prompt, user_query)
+
+    if "Keywords" in focus_mode or "Vocabulary" in focus_mode:
+        pedagogical_focus = """
+        PEDAGOGICAL FOCUS: KEYWORDS & TECHNICAL VOCABULARY
+        - Focus on developing precise domain terminology, key definitions, proper SI units, formulas, and structural representations.
+        - Gently challenge informal, vague, or layperson language; ask the student to rephrase explanations using precise scientific terms.
+        - Conduct a conversational check to reinforce conceptual retention.
+        """
+    else:
+        pedagogical_focus = """
+        PEDAGOGICAL FOCUS: SCIENTIFIC EXPLANATIONS & CAUSE/EFFECT
+        - Focus on helping the student articulate multi-step scientific mechanisms (e.g., 'because...', 'this causes...', 'resulting in...').
+        - Guide them to structure explanations logically: State the cause, explain the mechanism, and describe the outcome or effect.
+        - Encourage them to make connections between scientific principles and real-world phenomena or experimental data.
+        """
+
+    system_prompt = f"""You are an expert Socratic Disciplinary Literacy Coach for {COURSE_TITLE} ({LEVEL}).
+Student Focus Topic / Question: {custom_prompt}
+Relevant Specification Context:
+{context}
+
+{pedagogical_focus}
+
+CRITICAL RULES:
+- DO NOT replicate or mimic standard exam board questions or mark schemes.
+- Guide the student step-by-step using probing questions and short, accessible hints.
+- Focus strictly on developing the student's scientific literacy and vocabulary.
+- Never give away full answers directly."""
+
+    llm = get_llm(temperature=0.2, streaming=True)
+    messages_to_send = [SystemMessage(content=system_prompt)] + list(messages)
+
     for chunk in llm.stream(messages_to_send):
         if chunk.content:
             yield chunk.content
@@ -121,7 +225,7 @@ PEDAGOGICAL & DISCIPLINARY LITERACY DIRECTIVES:
   * "Evaluate": Require students to balance pros and cons before making a conclusion.
 - Disciplinary Precision: Enforce exact specification vocabulary, accurate mathematical/unit notation, and correct underlying scientific mechanisms while trapping common misconceptions."""
 
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash")
+    llm = get_llm(temperature=0.2, streaming=False)
     messages_to_send = [SystemMessage(content=system_prompt)] + list(state["messages"])
     response = llm.invoke(messages_to_send)
 
@@ -133,7 +237,7 @@ def didactic_fallback(state: ChatState) -> dict:
     user_query = state["messages"][-1].content if state.get("messages") else ""
     context = get_context(sub_topic, user_query)
 
-    system_prompt = f"""You are a strict {COURSE_TITLE} ({LEVEL}) Senior Examiner concluding a Socratic revision session.
+    system_prompt = f"""You are a strict {COURSE_TITLE} ({LEVEL}) Senior Science Examiner concluding a Socratic revision session.
 Topic Focus: {sub_topic}
 Syllabus Context:
 {context}
@@ -173,7 +277,7 @@ CRITICAL RULE: DO NOT include a percentage score, DO NOT include a summary data 
         )
     )
 
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash")
+    llm = get_llm(temperature=0.1, streaming=False)
     messages_to_send = (
         [SystemMessage(content=system_prompt)]
         + list(state["messages"])
@@ -185,6 +289,9 @@ CRITICAL RULE: DO NOT include a percentage score, DO NOT include a summary data 
 
 
 def route_turn(state: ChatState) -> str:
+    if state.get("is_freestyle", False):
+        return "socratic_tutor"
+
     if state.get("is_final_turn", False) or state.get("turn_count", 0) >= TARGET_TURNS:
         return "didactic_fallback"
 
@@ -260,9 +367,61 @@ Return ONLY a JSON object:
     ]
 }}"""
 
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0.2)
+    llm = get_llm(temperature=0.2, streaming=False)
     response = llm.invoke([HumanMessage(content=prompt)])
 
+    raw_text = extract_clean_text(response)
+    clean_text = re.sub(r"```json|```", "", raw_text).strip()
+    return json.loads(clean_text)
+
+
+def generate_freestyle_synthesis_prompt(
+    custom_prompt: str,
+    chat_history: list,
+    focus_mode: str = "Scientific Explanations & Cause/Effect",
+    course_title: str = COURSE_TITLE,
+    level: str = LEVEL,
+) -> dict:
+    """Generates a structured 6-point disciplinary literacy synthesis task based on the freestyle dialogue."""
+    transcript_lines = []
+    for msg in chat_history:
+        role = "Student" if msg.get("role") == "student" or isinstance(msg, HumanMessage) else "Tutor"
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+        transcript_lines.append(f"{role}: {content}")
+    full_transcript = "\n".join(transcript_lines)
+
+    if "Keywords" in focus_mode or "Vocabulary" in focus_mode:
+        task_instruction = f"Construct a coherent 6-mark summary connecting the key scientific terms, definitions, and concepts explored during today's discussion on '{custom_prompt}'."
+        rubric_focus = "Focus points strictly on precise scientific terms, units, and factual accuracy developed in the chat."
+    else:
+        task_instruction = f"Using the mechanisms and explanations developed in today's dialogue, write a structured 6-mark cause-and-effect outline explaining: '{custom_prompt}'."
+        rubric_focus = "Focus points on cause, mechanism, effect, scientific terms, and logical links."
+
+    prompt = f"""You are an expert {course_title} ({level}) educator.
+Student Topic / Question: "{custom_prompt}"
+
+Discussion Transcript:
+{full_transcript}
+
+Task:
+Create a 6-mark Disciplinary Literacy Synthesis Task based on the concepts explored in the discussion.
+{rubric_focus}
+
+Return ONLY a JSON object:
+{{
+    "question": "{task_instruction}",
+    "mark_scheme": [
+        "Mark 1: [Specific point/term from transcript]",
+        "Mark 2: [Specific point/term from transcript]",
+        "Mark 3: [Specific point/term from transcript]",
+        "Mark 4: [Specific point/term from transcript]",
+        "Mark 5: [Specific point/term from transcript]",
+        "Mark 6: [Coherent synthesis connecting these points]"
+    ]
+}}"""
+
+    llm = get_llm(temperature=0.2, streaming=False)
+    response = llm.invoke([HumanMessage(content=prompt)])
     raw_text = extract_clean_text(response)
     clean_text = re.sub(r"```json|```", "", raw_text).strip()
     return json.loads(clean_text)
@@ -305,12 +464,42 @@ Return ONLY a JSON object:
     "feedback": "Encouraging advice praising terminology use and suggesting specific additions for 6/6..."
 }}"""
 
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0)
+    llm = get_llm(temperature=0.0, streaming=False)
     response = llm.invoke([HumanMessage(content=prompt)])
 
     raw_text = extract_clean_text(response)
     clean_text = re.sub(r"```json|```", "", raw_text).strip()
     return json.loads(clean_text)
+
+
+def prepare_history_telemetry_payload(
+    unit: str,
+    subtopic: str,
+    synthesis_eval: dict,
+    course_title: str = COURSE_TITLE,
+    level: str = LEVEL,
+) -> dict:
+    """Formats payload strictly for insertion into 'activity_logs_science' under 'socratic' mode."""
+    score_pct = synthesis_eval.get("score_pct")
+    if score_pct is None and "score" in synthesis_eval:
+        score_pct = round((synthesis_eval["score"] / synthesis_eval.get("max_score", 6)) * 100, 1)
+
+    misconception = synthesis_eval.get("misconception_flag")
+    if misconception is None:
+        misconception = 1 if (score_pct is not None and score_pct < 45.0) else 0
+
+    return {
+        "table_name": DB_TABLE_NAME,
+        "subject": course_title,
+        "level": level,
+        "unit": unit,
+        "subtopic": subtopic,
+        "app_mode": "socratic",
+        "score_pct": score_pct or 0.0,
+        "keywords_used": ", ".join(synthesis_eval.get("keywords_used", [])),
+        "keywords_missed": ", ".join(synthesis_eval.get("keywords_missed", [])),
+        "misconception_flag": misconception,
+    }
 
 
 # --- Standalone Quiz Helpers ---
@@ -327,7 +516,7 @@ Generate exactly 10 short-answer exam questions testing precise definitions, sci
 Output ONLY a valid JSON array of 10 question strings, with no additional text or formatting:
 ["Question 1 text...", "Question 2 text...", ...]"""
 
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0.3)
+    llm = get_llm(temperature=0.3, streaming=False)
     response = llm.invoke([HumanMessage(content=prompt)])
 
     raw_text = extract_clean_text(response)
@@ -374,7 +563,7 @@ Return your assessment strictly as a single JSON object with no extra commentary
 Student Submission:
 {qa_pairs}"""
 
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0)
+    llm = get_llm(temperature=0.0, streaming=False)
     response = llm.invoke([HumanMessage(content=prompt)])
 
     raw_text = extract_clean_text(response)
@@ -398,7 +587,7 @@ def generate_extended_question(sub_topic: str, course_title: str = COURSE_TITLE,
 Create ONE high-tier 6-mark extended evaluation question for the subtopic: '{sub_topic}'.
 Use standard command words like 'Describe', 'Explain', or 'Evaluate'.
 Return ONLY the raw question text."""
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0.3)
+    llm = get_llm(temperature=0.3, streaming=False)
     response = llm.invoke([HumanMessage(content=prompt)])
     raw_text = extract_clean_text(response)
     return raw_text.strip()
@@ -423,7 +612,7 @@ Return a JSON object:
   "struggle_advice": "Advice for improvement...",
   "model_answer": "Exemplar top-band response..."
 }}"""
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0)
+    llm = get_llm(temperature=0.0, streaming=False)
     response = llm.invoke([HumanMessage(content=prompt)])
     clean_text = extract_clean_text(response)
     clean_text = re.sub(r"```json|```", "", clean_text).strip()
@@ -440,7 +629,7 @@ Return ONLY JSON:
   "question": "Exam question...",
   "layman_answer": "Informal student draft..."
 }}"""
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0.4)
+    llm = get_llm(temperature=0.4, streaming=False)
     response = llm.invoke([HumanMessage(content=prompt)])
     clean_text = extract_clean_text(response)
     clean_text = re.sub(r"```json|```", "", clean_text).strip()
@@ -464,7 +653,7 @@ Return JSON:
   "missed_terms": ["term 2"],
   "feedback": "Constructive examiner note..."
 }}"""
-    llm = ChatGoogleGenerativeAI(model="gemini-3.6-flash", temperature=0)
+    llm = get_llm(temperature=0.0, streaming=False)
     response = llm.invoke([HumanMessage(content=prompt)])
     clean_text = extract_clean_text(response)
     clean_text = re.sub(r"```json|```", "", clean_text).strip()
