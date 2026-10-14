@@ -31,6 +31,9 @@ importlib.reload(socratic_fsm)
 
 from socratic_fsm import (
     workflow,
+    verify_topic_alignment,
+    stream_freestyle_socratic_response,
+    generate_freestyle_synthesis_prompt,
     generate_socratic_synthesis_prompt,
     evaluate_socratic_synthesis,
     generate_quiz_questions,
@@ -70,7 +73,7 @@ THEME_BANNER_TEXT = "#065f46"     # Dark Emerald Banner Text
 Base = declarative_base()
 
 class ActivityLog(Base):
-    __tablename__ = "activity_logs"
+    __tablename__ = "activity_logs_science"  # <--- Dedicated Science Database Table
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
@@ -94,7 +97,7 @@ def log_session_to_supabase(
     keywords_missed: list = None, 
     misconception_flag: int = 0
 ):
-    """Logs session metrics statelessly to Supabase activity_logs table."""
+    """Logs session metrics statelessly to Supabase activity_logs_science table."""
     try:
         db_url = st.secrets["postgres"]["url"]
         engine = create_engine(db_url, pool_pre_ping=True)
@@ -105,7 +108,7 @@ def log_session_to_supabase(
         kw_missed_str = ", ".join([str(k) for k in keywords_missed if k]) if keywords_missed else None
 
         log_entry = ActivityLog(
-            subject=subject,  # Logs "Biology", "Chemistry", or "Physics" directly
+            subject=subject,
             level=LEVEL,
             unit=unit or "General",
             subtopic=subtopic or "General Practice",
@@ -223,6 +226,12 @@ if "active_unit" not in st.session_state:
     st.session_state.active_unit = None
 if "active_topic" not in st.session_state:
     st.session_state.active_topic = None
+if "is_freestyle" not in st.session_state:
+    st.session_state.is_freestyle = False
+if "freestyle_prompt" not in st.session_state:
+    st.session_state.freestyle_prompt = ""
+if "freestyle_focus" not in st.session_state:
+    st.session_state.freestyle_focus = "Scientific Explanations & Cause/Effect"
 if "app_mode" not in st.session_state:
     st.session_state.app_mode = None
 if "messages" not in st.session_state:
@@ -257,13 +266,17 @@ if "graph_state" not in st.session_state:
         "messages": [], 
         "sub_topic": st.session_state.active_topic, 
         "turn_count": 0, 
-        "is_final_turn": False
+        "is_final_turn": False,
+        "is_freestyle": False
     }
 
 def reset_session():
     st.session_state.active_subject = None
     st.session_state.active_unit = None
     st.session_state.active_topic = None
+    st.session_state.is_freestyle = False
+    st.session_state.freestyle_prompt = ""
+    st.session_state.freestyle_focus = "Scientific Explanations & Cause/Effect"
     st.session_state.app_mode = None
     st.session_state.messages = []
     st.session_state.quiz_questions = None
@@ -280,13 +293,13 @@ def reset_session():
     st.session_state.socratic_synthesis_results = None
     st.session_state.socratic_retry_mode = False
     st.session_state.graph_state = {
-        "messages": [], "sub_topic": None, "turn_count": 0, "is_final_turn": False
+        "messages": [], "sub_topic": None, "turn_count": 0, "is_final_turn": False, "is_freestyle": False
     }
     st.rerun()
 
 # --- Dynamic Screen Router ---
 
-if st.session_state.active_topic is None:
+if st.session_state.active_topic is None and st.session_state.app_mode != "freestyle_input":
     st.markdown(f'<div class="chat-header">🧪 {COURSE_TITLE} Socratic Coach</div>', unsafe_allow_html=True)
     
     st.markdown(f"""
@@ -327,13 +340,24 @@ if st.session_state.active_topic is None:
 
     st.write("")
 
-    if st.button("🤖 Start a Socratic Session", type="primary", use_container_width=True):
-        st.session_state.app_mode = "socratic"
-        st.session_state.active_subject = target_subject_name
-        st.session_state.active_unit = target_unit_name
-        st.session_state.active_topic = target_subtopic_name
-        st.session_state.graph_state["sub_topic"] = full_query
-        st.rerun()
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.button("🤖 Start Socratic Target Session", type="primary", use_container_width=True):
+            st.session_state.app_mode = "socratic"
+            st.session_state.is_freestyle = False
+            st.session_state.active_subject = target_subject_name
+            st.session_state.active_unit = target_unit_name
+            st.session_state.active_topic = target_subtopic_name
+            st.session_state.graph_state["sub_topic"] = full_query
+            st.session_state.graph_state["is_freestyle"] = False
+            st.rerun()
+
+    with col_btn2:
+        if st.button("🎙️ Start Freestyle Science Practice", type="primary", use_container_width=True):
+            st.session_state.app_mode = "freestyle_input"
+            st.rerun()
+
+    st.write("---")
 
     if st.button("📑 Take a Retrieval Quiz", use_container_width=True):
         st.session_state.app_mode = "quiz"
@@ -364,6 +388,55 @@ if st.session_state.active_topic is None:
             st.session_state.rewrite_data = generate_layman_transformation_prompt(full_query, COURSE_TITLE, LEVEL)
         st.rerun()
 
+# --- Freestyle Input View ---
+elif st.session_state.app_mode == "freestyle_input":
+    st.markdown(f'<div class="chat-header">🎙️ Freestyle Science Practice</div>', unsafe_allow_html=True)
+    st.subheader("Bring Your Own Scientific Question or Phenomenon")
+    st.write("Enter any question, homework prompt, or scientific phenomenon you'd like to explore Socratically:")
+
+    custom_input = st.text_input(
+        "Enter your scientific question, phenomenon, or topic:",
+        placeholder="e.g. Why does temperature affect enzyme activity and cause denaturation?",
+        key="freestyle_custom_input"
+    )
+
+    freestyle_focus = st.radio(
+        "🎯 Select Practice Focus:",
+        ["Scientific Explanations & Cause/Effect", "Keywords & Technical Vocabulary"],
+        horizontal=True,
+        key="freestyle_focus_selector"
+    )
+
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        if st.button("Launch Freestyle Dialogue", type="primary", use_container_width=True):
+            if custom_input.strip():
+                with st.spinner("Checking specification alignment..."):
+                    alignment = verify_topic_alignment(custom_input.strip())
+
+                if alignment.get("is_aligned", True):
+                    st.session_state.app_mode = "socratic"
+                    st.session_state.is_freestyle = True
+                    st.session_state.active_subject = COURSE_TITLE
+                    st.session_state.active_unit = "Freestyle Practice"
+                    st.session_state.active_topic = custom_input.strip()
+                    st.session_state.freestyle_prompt = custom_input.strip()
+                    st.session_state.freestyle_focus = freestyle_focus
+                    st.session_state.graph_state["sub_topic"] = custom_input.strip()
+                    st.session_state.graph_state["is_freestyle"] = True
+                    st.session_state.graph_state["freestyle_focus"] = freestyle_focus
+                    st.rerun()
+                else:
+                    st.error(f"⚠️ **Topic Alignment Guardrail:** {alignment.get('reasoning', 'Topic out of spec scope.')}")
+                    if alignment.get("suggested_pivot"):
+                        st.info(f"💡 **Suggested Specification Pivot:** {alignment.get('suggested_pivot')}")
+            else:
+                st.warning("Please enter a question or topic first.")
+
+    with col_f2:
+        if st.button("Cancel / Back to Selection Screen", use_container_width=True):
+            reset_session()
+
 # --- Socratic Mode View ---
 elif st.session_state.app_mode == "socratic":
     st.markdown(f'<div class="chat-header">🤖 {st.session_state.active_subject} Coach</div>', unsafe_allow_html=True)
@@ -372,18 +445,39 @@ elif st.session_state.app_mode == "socratic":
 
     with st.sidebar:
         st.subheader("📌 Active Target")
-        st.info(f"**Subject:** {st.session_state.active_subject}\n\n**Unit:** {st.session_state.active_unit}\n\n**Topic:** {st.session_state.active_topic}")
-        st.metric(label="Turn Counter", value=f"{student_turns} / {TARGET_TURNS}")
-        st.progress(min(student_turns / TARGET_TURNS, 1.0))
+        if st.session_state.is_freestyle:
+            st.info(f"**Mode:** Freestyle Practice\n\n**Focus:** {st.session_state.freestyle_focus}\n\n**Topic:** {st.session_state.active_topic}")
+            st.metric(label="Turn Counter", value=f"{student_turns} (Uncapped)")
+            if student_turns >= 1 and not st.session_state.socratic_dialogue_complete:
+                if st.button("🏁 Complete & Take 6-Mark Synthesis", type="primary", use_container_width=True):
+                    st.session_state.socratic_dialogue_complete = True
+                    st.rerun()
+        else:
+            st.info(f"**Subject:** {st.session_state.active_subject}\n\n**Unit:** {st.session_state.active_unit}\n\n**Topic:** {st.session_state.active_topic}")
+            st.metric(label="Turn Counter", value=f"{student_turns} / {TARGET_TURNS}")
+            st.progress(min(student_turns / TARGET_TURNS, 1.0))
+
         st.write("---")
         if st.button("🔄 New Session / Change Topic", use_container_width=True):
             reset_session()
 
     if len(st.session_state.messages) == 0:
-        initial_greeting = (
-            f"Welcome! We're exploring **{st.session_state.active_topic}** in **{st.session_state.active_subject}** today. "
-            f"To get started, what key scientific concept, process, equation, or keyword would you like to review?"
-        )
+        if st.session_state.is_freestyle:
+            if "Keywords" in st.session_state.get("freestyle_focus", ""):
+                initial_greeting = (
+                    f"Welcome! Let's build your scientific vocabulary for: **'{st.session_state.active_topic}'**. "
+                    f"To begin, what core terms, units, or definitions connect to this concept?"
+                )
+            else:
+                initial_greeting = (
+                    f"Welcome! Let's build your scientific explanation for: **'{st.session_state.active_topic}'**. "
+                    f"To begin, what is the initial cause or starting step in this process?"
+                )
+        else:
+            initial_greeting = (
+                f"Welcome! We're exploring **{st.session_state.active_topic}** in **{st.session_state.active_subject}** today. "
+                f"To get started, what key scientific concept, process, equation, or keyword would you like to review?"
+            )
         st.session_state.messages.append({"role": "tutor", "content": initial_greeting, "style": "tutor-msg"})
         st.session_state.graph_state["messages"].append(AIMessage(content=initial_greeting))
 
@@ -396,10 +490,10 @@ elif st.session_state.app_mode == "socratic":
         else:
             st.markdown(f'<div class="student-msg">🎒 <b>Student</b><br><br>{html_content}</div>', unsafe_allow_html=True)
 
-    if student_turns >= TARGET_TURNS and not st.session_state.socratic_dialogue_complete:
+    if not st.session_state.is_freestyle and student_turns >= TARGET_TURNS and not st.session_state.socratic_dialogue_complete:
         st.info(f"🎉 **Dialogue Phase Complete!** Proceed below to the 6-Mark Synthesis Challenge.")
 
-    is_disabled = student_turns >= TARGET_TURNS
+    is_disabled = (not st.session_state.is_freestyle and student_turns >= TARGET_TURNS) or st.session_state.socratic_dialogue_complete
     placeholder = "Dialogue phase complete. Complete the 6-mark synthesis below." if is_disabled else "Type your response here..."
     
     if user_input := st.chat_input(placeholder, disabled=is_disabled):
@@ -408,30 +502,55 @@ elif st.session_state.app_mode == "socratic":
         
         current_student_turns = sum(1 for m in st.session_state.messages if m.get("role") == "student")
         st.session_state.graph_state["turn_count"] = current_student_turns
-        st.session_state.graph_state["is_final_turn"] = (current_student_turns >= TARGET_TURNS)
 
-        with st.spinner("Analyzing response and generating feedback..."):
-            input_payload = {
-                "messages": st.session_state.graph_state["messages"],
-                "sub_topic": st.session_state.active_topic,
-                "turn_count": current_student_turns,
-                "is_final_turn": (current_student_turns >= TARGET_TURNS)
-            }
-            updated_state = workflow.invoke(input_payload)
-        
-        last_msg = updated_state["messages"][-1]
-        ai_reply = clean_latex(extract_clean_text(last_msg))
 
-        st.session_state.messages.append({"role": "tutor", "content": ai_reply, "style": "tutor-msg"})
-        st.session_state.graph_state = updated_state
+        if st.session_state.is_freestyle:
+            with st.spinner("Analyzing response and guiding dialogue..."):
+                full_stream = ""
+                generator = stream_freestyle_socratic_response(
+                    messages=st.session_state.graph_state["messages"],
+                    custom_prompt=st.session_state.freestyle_prompt,
+                    focus_mode=st.session_state.freestyle_focus
+                )
+                for chunk in generator:
+                    # Fix: Extract string content safely before string concatenation
+                    if hasattr(chunk, "content"):
+                        text_chunk = extract_clean_text(chunk.content)
+                    else:
+                        text_chunk = extract_clean_text(chunk)
+                    full_stream += text_chunk
+                
+                ai_reply = clean_latex(full_stream)
+                st.session_state.messages.append({"role": "tutor", "content": ai_reply, "style": "tutor-msg"})
+                st.session_state.graph_state["messages"].append(AIMessage(content=ai_reply))
+                st.rerun()
 
-        if current_student_turns >= TARGET_TURNS:
-            st.session_state.socratic_dialogue_complete = True
 
-        st.rerun()
+        else:
+            st.session_state.graph_state["is_final_turn"] = (current_student_turns >= TARGET_TURNS)
+            with st.spinner("Analyzing response and generating feedback..."):
+                input_payload = {
+                    "messages": st.session_state.graph_state["messages"],
+                    "sub_topic": st.session_state.active_topic,
+                    "turn_count": current_student_turns,
+                    "is_final_turn": (current_student_turns >= TARGET_TURNS)
+                }
+                updated_state = workflow.invoke(input_payload)
+            
+            last_msg = updated_state["messages"][-1]
+            ai_reply = clean_latex(extract_clean_text(last_msg))
+
+            st.session_state.messages.append({"role": "tutor", "content": ai_reply, "style": "tutor-msg"})
+            st.session_state.graph_state = updated_state
+
+            if current_student_turns >= TARGET_TURNS:
+                st.session_state.socratic_dialogue_complete = True
+
+            st.rerun()
  
     # --- Step 2: Render 6-Mark Disciplinary Literacy Synthesis ---
-    if student_turns >= TARGET_TURNS:
+    # FIX: Require explicit completion or reached target turns to show synthesis task
+    if st.session_state.socratic_dialogue_complete or (not st.session_state.is_freestyle and student_turns >= TARGET_TURNS):
         st.write("---")
         st.subheader("🎯 Final Mastery Challenge (6 Marks)")
         st.markdown(
@@ -440,12 +559,21 @@ elif st.session_state.app_mode == "socratic":
 
         if st.session_state.socratic_synthesis_q is None:
             with st.spinner("Generating 6-mark synthesis prompt based on your discussion..."):
-                st.session_state.socratic_synthesis_q = generate_socratic_synthesis_prompt(
-                    sub_topic=st.session_state.active_topic,
-                    chat_history=st.session_state.messages,
-                    course_title=COURSE_TITLE,
-                    level=LEVEL
-                )
+                if st.session_state.is_freestyle:
+                    st.session_state.socratic_synthesis_q = generate_freestyle_synthesis_prompt(
+                        custom_prompt=st.session_state.freestyle_prompt,
+                        chat_history=st.session_state.messages,
+                        focus_mode=st.session_state.freestyle_focus,
+                        course_title=COURSE_TITLE,
+                        level=LEVEL
+                    )
+                else:
+                    st.session_state.socratic_synthesis_q = generate_socratic_synthesis_prompt(
+                        sub_topic=st.session_state.active_topic,
+                        chat_history=st.session_state.messages,
+                        course_title=COURSE_TITLE,
+                        level=LEVEL
+                    )
 
         s_data = st.session_state.socratic_synthesis_q
 
@@ -473,7 +601,6 @@ elif st.session_state.app_mode == "socratic":
                         )
                         st.session_state.socratic_synthesis_results = eval_res
                         
-                        # Database logging normalized to % out of 6
                         score_out_of_6 = eval_res.get("score", 0)
                         score_pct = (score_out_of_6 / 6.0) * 100.0
                         
@@ -482,7 +609,7 @@ elif st.session_state.app_mode == "socratic":
                                 subject=st.session_state.active_subject,
                                 unit=st.session_state.active_unit,
                                 subtopic=st.session_state.active_topic,
-                                app_mode="socratic",
+                                app_mode="freestyle_socratic" if st.session_state.is_freestyle else "socratic",
                                 score_pct=score_pct,
                                 keywords_used=eval_res.get("keywords_used", []),
                                 keywords_missed=eval_res.get("keywords_missed", []),

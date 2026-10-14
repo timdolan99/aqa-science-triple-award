@@ -60,7 +60,7 @@ def generate_synthetic_data(num_entries=200):
         print("❌ Error: No units or subtopics found in course_spec.json.")
         return
 
-    modes = ["socratic", "quiz", "extended", "rewrite"]
+    modes = ["socratic", "freestyle_socratic", "quiz", "extended", "rewrite"]
     now = datetime.now()
     logs = []
 
@@ -102,8 +102,9 @@ def generate_synthetic_data(num_entries=200):
     if engine:
         try:
             df = pd.DataFrame(logs)
-            df.to_sql("activity_logs", engine, if_exists="append", index=False)
-            print(f"✅ Successfully inserted {num_entries} synthetic log entries into Supabase PostgreSQL!")
+            # Targets activity_logs_science table
+            df.to_sql("activity_logs_science", engine, if_exists="append", index=False)
+            print(f"✅ Successfully inserted {num_entries} synthetic log entries into activity_logs_science!")
         except Exception as e:
             print(f"❌ Failed to push data to Supabase: {e}")
 
